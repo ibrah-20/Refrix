@@ -1,0 +1,46 @@
+services:
+  - type: web
+    name: refrix-backend
+    env: node
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: node src/server.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 5000
+      - key: MONGODB_URI
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_EXPIRES_IN
+        value: 7d
+      - key: MPESA_CONSUMER_KEY
+        sync: false
+      - key: MPESA_CONSUMER_SECRET
+        sync: false
+      - key: MPESA_SHORTCODE
+        sync: false
+      - key: MPESA_PASSKEY
+        sync: false
+      - key: MPESA_CALLBACK_URL
+        sync: false
+      - key: MPESA_ENV
+        value: production
+      - key: FRONTEND_URL
+        sync: false
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: REGISTRATION_FEE
+        value: 500
+      - key: DIRECT_REFERRAL_COMMISSION
+        value: 300
+      - key: SECOND_LEVEL_COMMISSION
+        value: 100
+      - key: MIN_WITHDRAWAL_BALANCE
+        value: 1500
+      - key: MIN_QUALIFIED_REFERRALS
+        value: 3
