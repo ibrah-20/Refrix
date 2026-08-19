@@ -40,7 +40,12 @@ export default function RegisterPage() {
       toast.success('Account created! Complete payment to activate.');
       router.push('/dashboard');
     } catch (err) {
-      const msg = err.response?.data?.message || err.response?.data?.errors?.[0]?.msg || 'Registration failed.';
+      let msg = 'Registration failed.';
+      if (!err.response) {
+        msg = 'Network error. Please ensure the backend server is running.';
+      } else {
+        msg = err.response?.data?.message || err.response?.data?.errors?.[0]?.msg || 'Registration failed.';
+      }
       toast.error(msg);
     } finally {
       setLoading(false);

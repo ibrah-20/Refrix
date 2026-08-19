@@ -25,7 +25,13 @@ export default function LoginPage() {
       toast.success(`Welcome back, ${data.user.fullName.split(' ')[0]}!`);
       router.push(data.user.role === 'admin' ? '/admin' : '/dashboard');
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Login failed.');
+      let msg = 'Login failed.';
+      if (!err.response) {
+        msg = 'Network error. Please ensure the backend server is running.';
+      } else {
+        msg = err.response?.data?.message || err.response?.data?.errors?.[0]?.msg || 'Login failed.';
+      }
+      toast.error(msg);
     } finally {
       setLoading(false);
     }
