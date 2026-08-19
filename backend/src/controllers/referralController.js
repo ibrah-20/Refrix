@@ -28,7 +28,7 @@ exports.getMyReferrals = async (req, res) => {
 // Get referral link
 exports.getReferralLink = async (req, res) => {
   const baseUrl = process.env.FRONTEND_URL || 'https://refrix.com';
-  const link = `${baseUrl}/register?ref=${req.user.referralCode}`;
+  const link = `${baseUrl}/auth/register?ref=${req.user.referralCode}`;
   res.json({ success: true, referralCode: req.user.referralCode, link });
 };
 
