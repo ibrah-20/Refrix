@@ -23,6 +23,7 @@
     "mongoose": "^8.0.3",
     "morgan": "^1.10.0",
     "nanoid": "^3.3.7",
+    "pg": "^8.23.0",
     "winston": "^3.11.0"
   },
   "devDependencies": {
