@@ -2,7 +2,8 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const { nanoid } = require('nanoid');
 const { validationResult } = require('express-validator');
-const { userRepository, adminLogRepository } = require('../repositories');
+const { userRepository, referralRepository, adminLogRepository } = require('../repositories');
+const db = require('../db');
 const logger = require('../utils/logger');
 
 const signToken = (id) =>
@@ -66,15 +67,37 @@ exports.register = async (req, res) => {
 
     const passwordHash = await bcrypt.hash(password, 12);
 
-    const user = await userRepository.create({
-      fullName,
-      email: normalizedEmail,
-      phone: normalizedPhone,
-      passwordHash,
-      referralCode: newReferralCode,
-      referredById: referrer ? referrer.id : null,
-      registrationIP: ip,
-      deviceFingerprint,
+    // Create user and pending referral records within an atomic database transaction
+    const user = await db.withTransaction(async (client) => {
+      const newUser = await userRepository.create(
+        {
+          fullName,
+          email: normalizedEmail,
+          phone: normalizedPhone,
+          passwordHash,
+          referralCode: newReferralCode,
+          referredById: referrer ? referrer.id : null,
+          isPaid: false,
+          registrationIP: ip,
+          deviceFingerprint,
+        },
+        client
+      );
+
+      if (referrer) {
+        // Level 1 pending referral
+        await referralRepository.create(referrer.id, newUser.id, 1, client);
+
+        // Level 2 pending referral if referrer has a referrer
+        if (referrer.referred_by_id) {
+          const level2Referrer = await userRepository.findById(referrer.referred_by_id, client);
+          if (level2Referrer && level2Referrer.id !== newUser.id) {
+            await referralRepository.create(level2Referrer.id, newUser.id, 2, client);
+          }
+        }
+      }
+
+      return newUser;
     });
 
     const token = signToken(user.id);

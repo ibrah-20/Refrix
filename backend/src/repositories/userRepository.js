@@ -33,7 +33,7 @@ const userRepository = {
       referralCode,
       referredById = null,
       role = 'user',
-      isPaid = true,
+      isPaid = false,
       registrationIP = null,
       deviceFingerprint = null,
     } = userData;
