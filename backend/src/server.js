@@ -17,6 +17,9 @@ const adminRoutes = require('./routes/admin');
 
 const app = express();
 
+// Trust reverse proxy (Render / Cloudflare load balancers)
+app.set('trust proxy', 1);
+
 // Auto-seed admin user in development mode
 (async () => {
   if (process.env.NODE_ENV === 'development') {
@@ -59,18 +62,22 @@ app.use(
   })
 );
 
-// Rate limiting
+// Rate limiting for general API endpoints
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 min
-  max: 100,
+  max: 200,
+  standardHeaders: true,
+  legacyHeaders: false,
   message: { success: false, message: 'Too many requests. Please try again later.' },
 });
 app.use('/api', limiter);
 
-// Stricter limit on auth endpoints
+// Stricter rate limit for authentication endpoints (per client IP)
 const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 10,
+  windowMs: 15 * 60 * 1000, // 15 min
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
   message: { success: false, message: 'Too many auth attempts. Try again in 15 minutes.' },
 });
 app.use('/api/auth', authLimiter);
