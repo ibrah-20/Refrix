@@ -1,8 +1,8 @@
 const jwt = require('jsonwebtoken');
+const bcrypt = require('bcryptjs');
 const { nanoid } = require('nanoid');
 const { validationResult } = require('express-validator');
-const User = require('../models/User');
-const AdminLog = require('../models/AdminLog');
+const { userRepository, adminLogRepository } = require('../repositories');
 const logger = require('../utils/logger');
 
 const signToken = (id) =>
@@ -29,29 +29,28 @@ exports.register = async (req, res) => {
     const deviceFingerprint = req.headers['x-device-fingerprint'] || 'unknown';
 
     const normalizedPhone = normalizePhone(phone);
+    const normalizedEmail = email.toLowerCase().trim();
 
-    // Check duplicates
-    const existingUser = await User.findOne({
-      $or: [{ email: email.toLowerCase() }, { phone: normalizedPhone }],
-    });
+    // Check duplicate email or phone
+    const existingEmail = await userRepository.findByEmail(normalizedEmail);
+    if (existingEmail) {
+      return res.status(400).json({ success: false, message: 'Email already registered.' });
+    }
 
-    if (existingUser) {
-      const field = existingUser.email === email.toLowerCase() ? 'Email' : 'Phone number';
-      return res.status(400).json({ success: false, message: `${field} already registered.` });
+    const existingPhone = await userRepository.findByPhone(normalizedPhone);
+    if (existingPhone) {
+      return res.status(400).json({ success: false, message: 'Phone number already registered.' });
     }
 
     // Resolve referrer
     let referrer = null;
     if (referralCode) {
-      referrer = await User.findOne({ referralCode: referralCode.toUpperCase() });
+      referrer = await userRepository.findByReferralCode(referralCode.trim());
       if (!referrer) {
         return res.status(400).json({ success: false, message: 'Invalid referral code.' });
       }
-      /* if (!referrer.isPaid) {
-        return res.status(400).json({ success: false, message: 'Referrer has not completed registration payment.' });
-      } */
       // Self-referral check
-      if (referrer.phone === normalizedPhone || referrer.email === email.toLowerCase()) {
+      if (referrer.phone === normalizedPhone || referrer.email === normalizedEmail) {
         return res.status(400).json({ success: false, message: 'Self-referral is not allowed.' });
       }
     }
@@ -63,33 +62,35 @@ exports.register = async (req, res) => {
       newReferralCode = nanoid(8).toUpperCase();
       attempts++;
       if (attempts > 10) throw new Error('Could not generate unique referral code');
-    } while (await User.findOne({ referralCode: newReferralCode }));
+    } while (await userRepository.findByReferralCode(newReferralCode));
 
-    const user = await User.create({
+    const passwordHash = await bcrypt.hash(password, 12);
+
+    const user = await userRepository.create({
       fullName,
-      email: email.toLowerCase(),
+      email: normalizedEmail,
       phone: normalizedPhone,
-      password,
+      passwordHash,
       referralCode: newReferralCode,
-      referredBy: referrer?._id || null,
+      referredById: referrer ? referrer.id : null,
       registrationIP: ip,
       deviceFingerprint,
     });
 
-    const token = signToken(user._id);
+    const token = signToken(user.id);
 
     res.status(201).json({
       success: true,
       message: 'Registration successful. Please complete payment of KES 500 to activate your account.',
       token,
       user: {
-        id: user._id,
-        fullName: user.fullName,
+        id: user.id,
+        fullName: user.full_name,
         email: user.email,
         phone: user.phone,
-        referralCode: user.referralCode,
-        isPaid: user.isPaid,
-        walletBalance: user.walletBalance,
+        referralCode: user.referral_code,
+        isPaid: user.is_paid,
+        walletBalance: parseFloat(user.wallet_balance),
         role: user.role,
       },
     });
@@ -109,34 +110,32 @@ exports.login = async (req, res) => {
     const { email, password } = req.body;
     const ip = req.ip || req.headers['x-forwarded-for'];
 
-    const user = await User.findOne({ email: email.toLowerCase() }).select('+password');
+    const user = await userRepository.findByEmail(email);
 
-    if (!user || !(await user.comparePassword(password))) {
+    if (!user || !(await bcrypt.compare(password, user.password_hash))) {
       return res.status(401).json({ success: false, message: 'Invalid email or password.' });
     }
 
-    if (user.isBanned) {
-      return res.status(403).json({ success: false, message: `Account banned: ${user.banReason || 'Policy violation'}` });
+    if (user.is_banned) {
+      return res.status(403).json({ success: false, message: `Account banned: ${user.ban_reason || 'Policy violation'}` });
     }
 
-    user.lastLogin = new Date();
-    user.lastLoginIP = ip;
-    await user.save({ validateBeforeSave: false });
+    await userRepository.updateLastLogin(user.id, ip);
 
-    const token = signToken(user._id);
+    const token = signToken(user.id);
 
     res.json({
       success: true,
       token,
       user: {
-        id: user._id,
-        fullName: user.fullName,
+        id: user.id,
+        fullName: user.full_name,
         email: user.email,
         phone: user.phone,
-        referralCode: user.referralCode,
-        isPaid: user.isPaid,
-        walletBalance: user.walletBalance,
-        qualifiedReferralsCount: user.qualifiedReferralsCount,
+        referralCode: user.referral_code,
+        isPaid: user.is_paid,
+        walletBalance: parseFloat(user.wallet_balance),
+        qualifiedReferralsCount: parseInt(user.qualified_referrals_count, 10),
         role: user.role,
       },
     });
@@ -151,18 +150,19 @@ exports.getMe = async (req, res) => {
   res.json({
     success: true,
     user: {
-      id: user._id,
-      fullName: user.fullName,
+      id: user.id || user._id,
+      fullName: user.fullName || user.full_name,
       email: user.email,
       phone: user.phone,
-      referralCode: user.referralCode,
-      isPaid: user.isPaid,
-      walletBalance: user.walletBalance,
-      totalEarned: user.totalEarned,
-      totalWithdrawn: user.totalWithdrawn,
-      qualifiedReferralsCount: user.qualifiedReferralsCount,
+      referralCode: user.referralCode || user.referral_code,
+      isPaid: user.isPaid !== undefined ? user.isPaid : user.is_paid,
+      walletBalance: user.walletBalance !== undefined ? user.walletBalance : parseFloat(user.wallet_balance),
+      totalEarned: user.totalEarned !== undefined ? user.totalEarned : parseFloat(user.total_earned),
+      totalWithdrawn: user.totalWithdrawn !== undefined ? user.totalWithdrawn : parseFloat(user.total_withdrawn),
+      qualifiedReferralsCount: user.qualifiedReferralsCount !== undefined ? user.qualifiedReferralsCount : parseInt(user.qualified_referrals_count, 10),
       role: user.role,
-      createdAt: user.createdAt,
+      createdAt: user.createdAt || user.created_at,
     },
   });
 };
+

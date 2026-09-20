@@ -79,6 +79,7 @@ export default function AdminPage() {
     { id: 'overview', label: 'Overview', icon: TrendingUp },
     { id: 'users', label: 'Users', icon: Users },
     { id: 'withdrawals', label: `Withdrawals ${withdrawals.length ? `(${withdrawals.length})` : ''}`, icon: DollarSign },
+    { id: 'fraud', label: 'Fraud Flags', icon: Shield },
     { id: 'suspicious', label: 'Suspicious', icon: AlertTriangle },
   ];
 
@@ -282,6 +283,11 @@ export default function AdminPage() {
         </div>
       )}
 
+      {/* Fraud Flags */}
+      {activeTab === 'fraud' && (
+        <FraudFlagsTab />
+      )}
+
       {/* Suspicious */}
       {activeTab === 'suspicious' && (
         <SuspiciousTab />
@@ -336,6 +342,97 @@ function SuspiciousTab() {
                   </td>
                   <td className="px-4 py-4 text-xs font-mono text-slate-400">{u.registrationIP || '—'}</td>
                   <td className="px-4 py-4 text-xs text-slate-500">{new Date(u.createdAt).toLocaleDateString()}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FraudFlagsTab() {
+  const [flags, setFlags] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  const loadFlags = async () => {
+    setLoading(true);
+    try {
+      const { data } = await adminAPI.fraudFlags();
+      setFlags(data.flags || []);
+    } catch {
+      toast.error('Failed to load fraud flags.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { loadFlags(); }, []);
+
+  const handleUpdateStatus = async (flagId, newStatus) => {
+    const note = prompt(`Enter note for status update to '${newStatus}' (optional):`);
+    try {
+      await adminAPI.updateFraudFlagStatus(flagId, newStatus, note);
+      toast.success(`Fraud flag updated to ${newStatus}.`);
+      loadFlags();
+    } catch {
+      toast.error('Failed to update status.');
+    }
+  };
+
+  return (
+    <div className="card overflow-hidden p-0">
+      {loading ? (
+        <div className="flex justify-center py-12">
+          <div className="w-6 h-6 border-2 border-brand-500/30 border-t-brand-500 rounded-full animate-spin" />
+        </div>
+      ) : !flags.length ? (
+        <div className="py-16 text-center">
+          <Shield className="w-12 h-12 text-slate-700 mx-auto mb-3" />
+          <p className="text-slate-400">No fraud flags found</p>
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead>
+              <tr className="border-b border-slate-800">
+                <th className="text-xs text-slate-500 font-medium px-6 py-4 text-left">User</th>
+                <th className="text-xs text-slate-500 font-medium px-4 py-4 text-left">Type</th>
+                <th className="text-xs text-slate-500 font-medium px-4 py-4 text-left">Description</th>
+                <th className="text-xs text-slate-500 font-medium px-4 py-4 text-left">Risk Status</th>
+                <th className="text-xs text-slate-500 font-medium px-4 py-4 text-left">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {flags.map((f) => (
+                <tr key={f._id} className="border-b border-slate-800/50">
+                  <td className="px-6 py-4">
+                    <p className="text-sm text-white">{f.user?.fullName}</p>
+                    <p className="text-xs text-slate-500">{f.user?.email}</p>
+                  </td>
+                  <td className="px-4 py-4 text-xs font-mono text-slate-300">{f.type}</td>
+                  <td className="px-4 py-4 text-xs text-slate-400">{f.description}</td>
+                  <td className="px-4 py-4">
+                    <span className={clsx(
+                      'text-xs px-2.5 py-1 rounded-full font-medium',
+                      f.riskStatus === 'resolved' || f.riskStatus === 'cleared' ? 'bg-brand-500/10 text-brand-400 border border-brand-500/20' : 'bg-yellow-500/10 text-yellow-400 border border-yellow-500/20'
+                    )}>
+                      {f.riskStatus}
+                    </span>
+                  </td>
+                  <td className="px-4 py-4">
+                    <div className="flex gap-2">
+                      <button onClick={() => handleUpdateStatus(f._id, 'resolved')}
+                        className="text-xs bg-brand-500/10 text-brand-400 border border-brand-500/20 px-2.5 py-1 rounded-lg hover:bg-brand-500/20">
+                        Resolve
+                      </button>
+                      <button onClick={() => handleUpdateStatus(f._id, 'dismissed')}
+                        className="text-xs bg-slate-800 text-slate-400 border border-slate-700 px-2.5 py-1 rounded-lg hover:bg-slate-700">
+                        Dismiss
+                      </button>
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>

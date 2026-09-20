@@ -14,5 +14,7 @@ router.patch('/withdrawals/:withdrawalId/approve', adminController.approveWithdr
 router.patch('/withdrawals/:withdrawalId/reject', adminController.rejectWithdrawal);
 router.get('/transactions', adminController.getTransactions);
 router.get('/logs', adminController.getAdminLogs);
+router.get('/fraud-flags', adminController.getFraudFlags);
+router.patch('/fraud-flags/:flagId/status', adminController.updateFraudFlagStatus);
 
 module.exports = router;

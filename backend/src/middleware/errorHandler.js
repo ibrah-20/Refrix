@@ -6,17 +6,15 @@ const errorHandler = (err, req, res, next) => {
 
   logger.error(err);
 
-  // Mongoose duplicate key
-  if (err.code === 11000) {
-    const field = Object.keys(err.keyValue)[0];
-    error.message = `${field.charAt(0).toUpperCase() + field.slice(1)} already exists.`;
-    return res.status(400).json({ success: false, message: error.message });
+  // PostgreSQL duplicate key (unique constraint violation)
+  if (err.code === '23505') {
+    const detail = err.detail || 'Duplicate key constraint violation.';
+    return res.status(400).json({ success: false, message: 'Resource already exists.', detail });
   }
 
-  // Mongoose validation error
-  if (err.name === 'ValidationError') {
-    const messages = Object.values(err.errors).map((e) => e.message);
-    return res.status(400).json({ success: false, message: messages.join('. ') });
+  // PostgreSQL foreign key violation
+  if (err.code === '23503') {
+    return res.status(400).json({ success: false, message: 'Referenced record not found.' });
   }
 
   // JWT errors

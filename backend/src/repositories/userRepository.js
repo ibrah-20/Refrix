@@ -116,6 +116,11 @@ const userRepository = {
     return res.rows[0] || null;
   },
 
+  async findByIdForUpdate(id, dbClient = db) {
+    const res = await dbClient.query('SELECT * FROM users WHERE id = $1 FOR UPDATE', [id]);
+    return res.rows[0] || null;
+  },
+
   async findAll(limit = 50, offset = 0, dbClient = db) {
     const res = await dbClient.query(
       'SELECT * FROM users ORDER BY created_at DESC LIMIT $1 OFFSET $2',
@@ -126,3 +131,4 @@ const userRepository = {
 };
 
 module.exports = userRepository;
+

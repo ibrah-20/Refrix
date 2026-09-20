@@ -74,6 +74,14 @@ const transactionRepository = {
     return res.rows[0] || null;
   },
 
+  async findByCheckoutRequestIdForUpdate(checkoutRequestId, dbClient = db) {
+    const res = await dbClient.query(
+      'SELECT * FROM transactions WHERE mpesa_checkout_request_id = $1 FOR UPDATE',
+      [checkoutRequestId]
+    );
+    return res.rows[0] || null;
+  },
+
   async findByReceiptNumber(receiptNumber, dbClient = db) {
     const res = await dbClient.query(
       'SELECT * FROM transactions WHERE mpesa_receipt_number = $1',
@@ -118,7 +126,14 @@ const transactionRepository = {
 
     const res = await dbClient.query(sql, params);
     return res.rows[0] || null;
+  },
+
+  async findByIdForUpdate(id, dbClient = db) {
+    const res = await dbClient.query('SELECT * FROM transactions WHERE id = $1 FOR UPDATE', [id]);
+    return res.rows[0] || null;
   }
 };
 
 module.exports = transactionRepository;
+
+

@@ -4,9 +4,6 @@ const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
-const mongoSanitize = require('express-mongo-sanitize');
-
-const connectDB = require('./config/database');
 const errorHandler = require('./middleware/errorHandler');
 const logger = require('./utils/logger');
 
@@ -14,34 +11,42 @@ const authRoutes = require('./routes/auth');
 const paymentRoutes = require('./routes/payments');
 const referralRoutes = require('./routes/referrals');
 const withdrawalRoutes = require('./routes/withdrawals');
+const notificationRoutes = require('./routes/notifications');
 const adminRoutes = require('./routes/admin');
+
 
 const app = express();
 
-// Connect DB
-connectDB().then(async () => {
+// Auto-seed admin user in development mode
+(async () => {
   if (process.env.NODE_ENV === 'development') {
     try {
-      const User = require('./models/User');
+      const bcrypt = require('bcryptjs');
+      const { userRepository } = require('./repositories');
       const { nanoid } = require('nanoid');
-      const existing = await User.findOne({ email: process.env.ADMIN_EMAIL });
+      const adminEmail = process.env.ADMIN_EMAIL || 'admin@refrix.com';
+      const adminPassword = process.env.ADMIN_PASSWORD || 'AdminPass123!';
+
+      const existing = await userRepository.findByEmail(adminEmail);
       if (!existing) {
-        await User.create({
+        const passwordHash = await bcrypt.hash(adminPassword, 12);
+        await userRepository.create({
           fullName: 'Refrix Admin',
-          email: process.env.ADMIN_EMAIL,
+          email: adminEmail,
           phone: '254700000000',
-          password: process.env.ADMIN_PASSWORD,
+          passwordHash,
           referralCode: nanoid(8).toUpperCase(),
           role: 'admin',
           isPaid: true,
         });
-        logger.info(`Admin user auto-seeded: ${process.env.ADMIN_EMAIL}`);
+        logger.info(`Admin user auto-seeded: ${adminEmail}`);
       }
     } catch (err) {
       logger.error(`Failed to auto-seed admin: ${err.message}`);
     }
   }
-});
+})();
+
 
 // Security headers
 app.use(helmet());
@@ -74,9 +79,6 @@ app.use('/api/auth', authLimiter);
 app.use(express.json({ limit: '10kb' }));
 app.use(express.urlencoded({ extended: true }));
 
-// NoSQL injection prevention
-app.use(mongoSanitize());
-
 // Logging
 if (process.env.NODE_ENV !== 'test') {
   app.use(morgan('combined', { stream: { write: (msg) => logger.info(msg.trim()) } }));
@@ -90,7 +92,9 @@ app.use('/api/auth', authRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/referrals', referralRoutes);
 app.use('/api/withdrawals', withdrawalRoutes);
+app.use('/api/notifications', notificationRoutes);
 app.use('/api/admin', adminRoutes);
+
 
 // 404
 app.use((req, res) => res.status(404).json({ success: false, message: 'Route not found.' }));

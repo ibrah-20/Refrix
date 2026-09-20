@@ -1,12 +1,38 @@
-const User = require('../models/User');
-const Referral = require('../models/Referral');
+const { userRepository, referralRepository } = require('../repositories');
 
 // Get user's referrals
 exports.getMyReferrals = async (req, res) => {
   try {
-    const referrals = await Referral.find({ referrer: req.user._id })
-      .populate('referee', 'fullName email phone isPaid createdAt')
-      .sort({ createdAt: -1 });
+    const userId = req.user.id || req.user._id;
+    const rawReferrals = await referralRepository.findByReferrer(userId);
+
+    const referrals = await Promise.all(
+      rawReferrals.map(async (r) => {
+        const refereeUser = await userRepository.findById(r.referee_id);
+        return {
+          id: r.id,
+          _id: r.id,
+          referrer: r.referrer_id,
+          referee: refereeUser
+            ? {
+                id: refereeUser.id,
+                _id: refereeUser.id,
+                fullName: refereeUser.full_name,
+                email: refereeUser.email,
+                phone: refereeUser.phone,
+                isPaid: refereeUser.is_paid,
+                createdAt: refereeUser.created_at,
+              }
+            : null,
+          level: r.level,
+          status: r.status,
+          commissionAmount: parseFloat(r.commission_amount),
+          commissionPaid: r.commission_paid,
+          qualifiedAt: r.qualified_at,
+          createdAt: r.created_at,
+        };
+      })
+    );
 
     const stats = {
       total: referrals.length,
@@ -28,16 +54,31 @@ exports.getMyReferrals = async (req, res) => {
 // Get referral link
 exports.getReferralLink = async (req, res) => {
   const baseUrl = process.env.FRONTEND_URL || 'https://refrix.com';
-  const link = `${baseUrl}/auth/register?ref=${req.user.referralCode}`;
-  res.json({ success: true, referralCode: req.user.referralCode, link });
+  const referralCode = req.user.referralCode || req.user.referral_code;
+  const link = `${baseUrl}/auth/register?ref=${referralCode}`;
+  res.json({ success: true, referralCode, link });
 };
 
 // Get referred-by info
 exports.getReferredBy = async (req, res) => {
   try {
-    const user = await User.findById(req.user._id).populate('referredBy', 'fullName referralCode');
-    res.json({ success: true, referredBy: user.referredBy });
+    const userId = req.user.id || req.user._id;
+    const user = await userRepository.findById(userId);
+
+    let referredBy = null;
+    if (user && user.referred_by_id) {
+      const refUser = await userRepository.findById(user.referred_by_id);
+      if (refUser) {
+        referredBy = {
+          fullName: refUser.full_name,
+          referralCode: refUser.referral_code,
+        };
+      }
+    }
+
+    res.json({ success: true, referredBy });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Failed.' });
   }
 };
+

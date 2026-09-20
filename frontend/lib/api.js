@@ -62,6 +62,13 @@ export const withdrawalAPI = {
   myWithdrawals: () => api.get('/withdrawals/my-withdrawals'),
 };
 
+// Notifications
+export const notificationAPI = {
+  myNotifications: () => api.get('/notifications'),
+  markAsRead: (id) => api.patch(`/notifications/${id}/read`),
+  markAllAsRead: () => api.patch('/notifications/read-all'),
+};
+
 // Admin
 export const adminAPI = {
   dashboard: () => api.get('/admin/dashboard'),
@@ -74,4 +81,7 @@ export const adminAPI = {
   rejectWithdrawal: (id, reason) => api.patch(`/admin/withdrawals/${id}/reject`, { reason }),
   transactions: (params) => api.get('/admin/transactions', { params }),
   logs: () => api.get('/admin/logs'),
+  fraudFlags: (params) => api.get('/admin/fraud-flags', { params }),
+  updateFraudFlagStatus: (flagId, status, note) =>
+    api.patch(`/admin/fraud-flags/${flagId}/status`, { status, note }),
 };

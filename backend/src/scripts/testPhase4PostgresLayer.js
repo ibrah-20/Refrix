@@ -1,8 +1,6 @@
 require('dotenv').config();
 const db = require('../db');
 const repositories = require('../repositories');
-const connectDB = require('../config/database');
-const mongoose = require('mongoose');
 const https = require('https');
 
 async function checkSupabaseRestApi() {
@@ -144,19 +142,6 @@ async function runTests() {
     }
   }
 
-  // 7. MongoDB Connection Preservation Test
-  try {
-    await connectDB();
-    if (mongoose.connection.readyState === 1 || mongoose.connection.readyState === 2) {
-      console.log('✓ 7. MongoDB Connection Preservation: SUCCESS (MongoDB connection remains active)');
-      await mongoose.disconnect();
-    } else {
-      throw new Error(`Unexpected mongoose readyState: ${mongoose.connection.readyState}`);
-    }
-  } catch (err) {
-    console.error(`✗ 7. MongoDB Connection Preservation: FAILED (${err.message})`);
-    failures++;
-  }
 
   console.log('\n===============================================');
   if (failures === 0) {

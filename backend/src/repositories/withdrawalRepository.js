@@ -51,7 +51,27 @@ const withdrawalRepository = {
     `;
     const res = await dbClient.query(sql, [id, status, processedById, adminNote, mpesaReceiptNumber]);
     return res.rows[0] || null;
+  },
+
+  async findByIdForUpdate(id, dbClient = db) {
+    const res = await dbClient.query('SELECT * FROM withdrawals WHERE id = $1 FOR UPDATE', [id]);
+    return res.rows[0] || null;
+  },
+
+  async getDailyWithdrawalStats(userId, dbClient = db) {
+    const sql = `
+      SELECT COALESCE(SUM(amount), 0) AS daily_total, COUNT(*) AS daily_count
+      FROM withdrawals
+      WHERE user_id = $1 AND created_at >= NOW() - INTERVAL '24 hours' AND status != 'rejected'
+    `;
+    const res = await dbClient.query(sql, [userId]);
+    return {
+      dailyTotal: parseFloat(res.rows[0].daily_total),
+      dailyCount: parseInt(res.rows[0].daily_count, 10),
+    };
   }
 };
 
 module.exports = withdrawalRepository;
+
+

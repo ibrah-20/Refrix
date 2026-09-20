@@ -1,9 +1,14 @@
-const mongoose = require('mongoose');
-const User = require('../models/User');
-const Transaction = require('../models/Transaction');
+const db = require('../db');
+const {
+  userRepository,
+  transactionRepository,
+  fraudFlagRepository,
+  notificationRepository,
+} = require('../repositories');
 const { initiateSTKPush, querySTKPush, normalizePhone } = require('../services/mpesa');
 const { processCommissions } = require('../services/commission');
 const logger = require('../utils/logger');
+
 
 const REGISTRATION_FEE = parseInt(process.env.REGISTRATION_FEE) || 500;
 
@@ -11,33 +16,37 @@ const REGISTRATION_FEE = parseInt(process.env.REGISTRATION_FEE) || 500;
 exports.initiatePayment = async (req, res) => {
   try {
     const user = req.user;
+    const userId = user.id || user._id;
 
-    if (user.isPaid) {
+    if (user.isPaid || user.is_paid) {
       return res.status(400).json({ success: false, message: 'Payment already completed.' });
     }
 
     // Check for existing pending transaction
-    const pendingTx = await Transaction.findOne({
-      user: user._id,
-      type: 'registration',
-      status: 'pending',
-      createdAt: { $gt: new Date(Date.now() - 5 * 60 * 1000) }, // last 5 mins
-    });
+    const recentTxs = await transactionRepository.findByUser(userId, 10);
+    const pendingTx = recentTxs.find(
+      (t) =>
+        t.type === 'registration' &&
+        t.status === 'pending' &&
+        new Date(t.created_at) > new Date(Date.now() - 5 * 60 * 1000)
+    );
+
     if (pendingTx) {
       return res.status(400).json({
         success: false,
         message: 'A payment request is already pending. Please check your phone.',
-        checkoutRequestId: pendingTx.mpesaCheckoutRequestId,
+        checkoutRequestId: pendingTx.mpesa_checkout_request_id,
       });
     }
 
     const phone = normalizePhone(user.phone);
     const ip = req.ip || req.headers['x-forwarded-for'];
+    const referralCode = user.referralCode || user.referral_code;
 
     const stkResult = await initiateSTKPush({
       phone,
       amount: REGISTRATION_FEE,
-      accountReference: `RC-${user.referralCode}`,
+      accountReference: `RC-${referralCode}`,
       transactionDesc: 'Refrix Registration Fee',
     });
 
@@ -46,8 +55,8 @@ exports.initiatePayment = async (req, res) => {
     }
 
     // Save pending transaction
-    const transaction = await Transaction.create({
-      user: user._id,
+    const transaction = await transactionRepository.create({
+      userId,
       type: 'registration',
       amount: REGISTRATION_FEE,
       status: 'pending',
@@ -63,7 +72,7 @@ exports.initiatePayment = async (req, res) => {
       success: true,
       message: 'STK Push sent. Check your phone and enter M-Pesa PIN.',
       checkoutRequestId: stkResult.checkoutRequestId,
-      transactionId: transaction._id,
+      transactionId: transaction.id,
     });
   } catch (error) {
     logger.error('Initiate payment error:', error);
@@ -84,18 +93,22 @@ exports.mpesaCallback = async (req, res) => {
 
     logger.info(`M-Pesa callback received: ${CheckoutRequestID}, ResultCode: ${ResultCode}`);
 
-    const transaction = await Transaction.findOne({ mpesaCheckoutRequestId: CheckoutRequestID });
+    const transaction = await transactionRepository.findByCheckoutRequestId(CheckoutRequestID);
     if (!transaction) {
       logger.warn(`No transaction found for CheckoutRequestID: ${CheckoutRequestID}`);
       return;
     }
 
-    transaction.rawCallbackData = req.body;
+    if (transaction.status !== 'pending') {
+      logger.info(`Transaction ${transaction.id} already in status '${transaction.status}'. Skipping callback processing.`);
+      return;
+    }
 
     if (ResultCode !== 0) {
-      transaction.status = 'failed';
-      await transaction.save();
-      logger.info(`Payment failed for transaction ${transaction._id}: ${ResultDesc}`);
+      await transactionRepository.updateStatus(transaction.id, 'failed', {
+        rawCallbackData: req.body,
+      });
+      logger.info(`Payment failed for transaction ${transaction.id}: ${ResultDesc}`);
       return;
     }
 
@@ -111,27 +124,35 @@ exports.mpesaCallback = async (req, res) => {
     const mpesaPhone = meta['PhoneNumber']?.toString();
 
     // Duplicate receipt check
-    const existing = await Transaction.findOne({ mpesaReceiptNumber: receiptNumber });
-    if (existing) {
+    const existing = await transactionRepository.findByReceiptNumber(receiptNumber);
+    if (existing && existing.id !== transaction.id) {
       logger.warn(`Duplicate receipt: ${receiptNumber}`);
-      transaction.status = 'suspicious';
-      transaction.isSuspicious = true;
-      transaction.suspiciousReason = 'Duplicate M-Pesa receipt number';
-      await transaction.save();
+      await transactionRepository.updateStatus(transaction.id, 'suspicious', {
+        mpesaReceiptNumber: receiptNumber,
+        mpesaTransactionDate: transactionDate,
+        rawCallbackData: req.body,
+        isSuspicious: true,
+        suspiciousReason: 'Duplicate M-Pesa receipt number',
+      });
+      await fraudFlagRepository.create({
+        userId: transaction.user_id,
+        type: 'repeated_payment_failures',
+        riskStatus: 'review',
+        description: 'Duplicate M-Pesa receipt number',
+        relatedTransactionId: transaction.id,
+        metadata: { receiptNumber },
+      });
       return;
     }
 
-    transaction.mpesaReceiptNumber = receiptNumber;
-    transaction.mpesaTransactionDate = transactionDate;
-    transaction.mpesaPhoneUsed = mpesaPhone;
-
     // Load user
-    const user = await User.findById(transaction.user);
+    const user = await userRepository.findById(transaction.user_id);
     if (!user) {
-      transaction.status = 'suspicious';
-      transaction.isSuspicious = true;
-      transaction.suspiciousReason = 'User not found at callback';
-      await transaction.save();
+      await transactionRepository.updateStatus(transaction.id, 'suspicious', {
+        rawCallbackData: req.body,
+        isSuspicious: true,
+        suspiciousReason: 'User not found at callback',
+      });
       return;
     }
 
@@ -144,70 +165,108 @@ exports.mpesaCallback = async (req, res) => {
       normalizedUserPhone.endsWith(normalizedMpesaPhone.slice(-9));
 
     if (!phoneMatches) {
-      transaction.status = 'suspicious';
-      transaction.isSuspicious = true;
-      transaction.phoneMismatch = true;
-      transaction.suspiciousReason = `Phone mismatch: registered ${normalizedUserPhone}, paid from ${normalizedMpesaPhone}`;
-      await transaction.save();
-
-      // Flag user as suspicious
-      await User.findByIdAndUpdate(user._id, {
+      await transactionRepository.updateStatus(transaction.id, 'suspicious', {
+        mpesaReceiptNumber: receiptNumber,
+        mpesaTransactionDate: transactionDate,
+        rawCallbackData: req.body,
         isSuspicious: true,
-        suspiciousReason: 'Payment phone mismatch',
+        suspiciousReason: `Phone mismatch: registered ${normalizedUserPhone}, paid from ${normalizedMpesaPhone}`,
       });
 
-      logger.warn(`Phone mismatch for user ${user._id}: ${normalizedUserPhone} vs ${normalizedMpesaPhone}`);
+      await fraudFlagRepository.create({
+        userId: user.id,
+        type: 'phone_reused',
+        riskStatus: 'review',
+        description: `Phone mismatch: registered ${normalizedUserPhone}, paid from ${normalizedMpesaPhone}`,
+        relatedTransactionId: transaction.id,
+      });
+
+      logger.warn(`Phone mismatch for user ${user.id}: ${normalizedUserPhone} vs ${normalizedMpesaPhone}`);
       return;
     }
 
     // Amount check
     if (parseFloat(amount) < REGISTRATION_FEE) {
-      transaction.status = 'suspicious';
-      transaction.isSuspicious = true;
-      transaction.suspiciousReason = `Insufficient amount: ${amount} < ${REGISTRATION_FEE}`;
-      await transaction.save();
+      await transactionRepository.updateStatus(transaction.id, 'suspicious', {
+        mpesaReceiptNumber: receiptNumber,
+        mpesaTransactionDate: transactionDate,
+        rawCallbackData: req.body,
+        isSuspicious: true,
+        suspiciousReason: `Insufficient amount: ${amount} < ${REGISTRATION_FEE}`,
+      });
       return;
     }
 
-    // All good — process with a Mongoose session for atomicity
-    const session = await mongoose.startSession();
-    session.startTransaction();
+    // Process payment and commissions atomically with row locking
+    await db.withTransaction(async (client) => {
+      const lockedTx = await transactionRepository.findByIdForUpdate(transaction.id, client);
+      if (!lockedTx || lockedTx.status !== 'pending') {
+        logger.info(`Transaction ${transaction.id} locked and was already processed by concurrent callback.`);
+        return;
+      }
 
-    try {
-      transaction.status = 'completed';
-      transaction.phoneMatchVerified = true;
-      await transaction.save({ session });
+      const lockedUser = await userRepository.findByIdForUpdate(user.id, client);
+      if (!lockedUser) return;
 
-      user.isPaid = true;
-      await user.save({ session });
+      if (lockedUser.is_paid) {
+        logger.info(`User ${user.id} is already marked as paid. Skipping duplicate commission payout.`);
+        await transactionRepository.updateStatus(
+          transaction.id,
+          'completed',
+          {
+            mpesaReceiptNumber: receiptNumber,
+            mpesaTransactionDate: transactionDate,
+            rawCallbackData: req.body,
+          },
+          client
+        );
+        return;
+      }
+
+      await transactionRepository.updateStatus(
+        transaction.id,
+        'completed',
+        {
+          mpesaReceiptNumber: receiptNumber,
+          mpesaTransactionDate: transactionDate,
+          rawCallbackData: req.body,
+        },
+        client
+      );
+
+      await client.query('UPDATE users SET is_paid = true, updated_at = NOW() WHERE id = $1', [user.id]);
+
+      await notificationRepository.create(
+        {
+          userId: user.id,
+          type: 'payment_success',
+          channel: 'in_app',
+          title: 'Payment Received',
+          message: 'Your registration payment of KES 500 has been verified.',
+        },
+        client
+      );
 
       // Process commissions up 2 levels
-      await processCommissions(user._id, session);
+      await processCommissions(user.id, client);
+    });
 
-      await session.commitTransaction();
-      logger.info(`Payment verified for user ${user._id}. Commissions processed.`);
-    } catch (err) {
-      await session.abortTransaction();
-      logger.error('Commission processing failed:', err);
-    } finally {
-      session.endSession();
-    }
+    logger.info(`Payment verified for user ${user.id}. Commissions processed.`);
   } catch (error) {
     logger.error('Callback processing error:', error);
   }
 };
 
+
 // Query payment status
 exports.queryPayment = async (req, res) => {
   try {
     const { checkoutRequestId } = req.params;
+    const userId = req.user.id || req.user._id;
 
-    const transaction = await Transaction.findOne({
-      mpesaCheckoutRequestId: checkoutRequestId,
-      user: req.user._id,
-    });
+    const transaction = await transactionRepository.findByCheckoutRequestId(checkoutRequestId);
 
-    if (!transaction) {
+    if (!transaction || transaction.user_id !== userId) {
       return res.status(404).json({ success: false, message: 'Transaction not found.' });
     }
 
@@ -216,8 +275,7 @@ exports.queryPayment = async (req, res) => {
       try {
         const result = await querySTKPush(checkoutRequestId);
         if (result.ResultCode === '0' || result.ResultCode === 0) {
-          // Callback may have already processed, re-check
-          const refreshed = await Transaction.findById(transaction._id);
+          const refreshed = await transactionRepository.findById(transaction.id);
           return res.json({ success: true, status: refreshed.status, transaction: refreshed });
         }
       } catch (_) { /* ignore query errors */ }
@@ -233,16 +291,17 @@ exports.queryPayment = async (req, res) => {
 // Get user's transactions
 exports.getMyTransactions = async (req, res) => {
   try {
-    const { page = 1, limit = 20 } = req.query;
-    const transactions = await Transaction.find({ user: req.user._id })
-      .sort({ createdAt: -1 })
-      .limit(limit * 1)
-      .skip((page - 1) * limit);
+    const { limit = 20 } = req.query;
+    const userId = req.user.id || req.user._id;
+    const transactions = await transactionRepository.findByUser(userId, parseInt(limit, 10));
 
-    const total = await Transaction.countDocuments({ user: req.user._id });
-
-    res.json({ success: true, transactions, total, page: parseInt(page), pages: Math.ceil(total / limit) });
+    res.json({
+      success: true,
+      transactions,
+      total: transactions.length,
+    });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Failed to fetch transactions.' });
   }
 };
+

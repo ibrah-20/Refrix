@@ -52,12 +52,13 @@ const referralRepository = {
           commission_paid = true,
           qualified_at = NOW(),
           updated_at = NOW()
-      WHERE id = $1
+      WHERE id = $1 AND status = 'pending' AND commission_paid = false
       RETURNING *
     `;
     const res = await dbClient.query(sql, [id, commissionAmount]);
     return res.rows[0] || null;
   },
+
 
   async markRejected(id, reason, dbClient = db) {
     const sql = `

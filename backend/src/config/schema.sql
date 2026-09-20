@@ -281,6 +281,8 @@ CREATE INDEX IF NOT EXISTS idx_referrals_referee ON referrals(referee_id);
 CREATE INDEX IF NOT EXISTS idx_transactions_user_type ON transactions(user_id, type);
 CREATE INDEX IF NOT EXISTS idx_transactions_mpesa_checkout ON transactions(mpesa_checkout_request_id) WHERE mpesa_checkout_request_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_transactions_mpesa_receipt ON transactions(mpesa_receipt_number) WHERE mpesa_receipt_number IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_transactions_checkout ON transactions(mpesa_checkout_request_id) WHERE mpesa_checkout_request_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_completed_receipt ON transactions(mpesa_receipt_number) WHERE mpesa_receipt_number IS NOT NULL AND status = 'completed';
 
 CREATE INDEX IF NOT EXISTS idx_wallet_tx_user_created ON wallet_transactions(user_id, created_at DESC);
 

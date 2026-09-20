@@ -1,33 +1,40 @@
 require('dotenv').config();
-const mongoose = require('mongoose');
+const bcrypt = require('bcryptjs');
 const { nanoid } = require('nanoid');
-const User = require('../models/User');
-const connectDB = require('../config/database');
+const { userRepository } = require('../repositories');
+const db = require('../db');
 
 const seedAdmin = async () => {
-  await connectDB();
+  const adminEmail = process.env.ADMIN_EMAIL || 'admin@refrix.com';
+  const adminPassword = process.env.ADMIN_PASSWORD || 'AdminPass123!';
 
-  const existing = await User.findOne({ email: process.env.ADMIN_EMAIL });
+  const existing = await userRepository.findByEmail(adminEmail);
   if (existing) {
     console.log('Admin already exists:', existing.email);
+    if (db.pool) await db.pool.end();
     process.exit(0);
   }
 
-  await User.create({
+  const passwordHash = await bcrypt.hash(adminPassword, 12);
+
+  await userRepository.create({
     fullName: 'Refrix Admin',
-    email: process.env.ADMIN_EMAIL,
+    email: adminEmail,
     phone: '254700000000',
-    password: process.env.ADMIN_PASSWORD,
+    passwordHash,
     referralCode: nanoid(8).toUpperCase(),
     role: 'admin',
     isPaid: true,
   });
 
-  console.log('Admin created:', process.env.ADMIN_EMAIL);
+  console.log('Admin created:', adminEmail);
+  if (db.pool) await db.pool.end();
   process.exit(0);
 };
 
-seedAdmin().catch((err) => {
+seedAdmin().catch(async (err) => {
   console.error(err);
+  if (db.pool) await db.pool.end();
   process.exit(1);
 });
+
