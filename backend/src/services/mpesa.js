@@ -1,20 +1,22 @@
 const axios = require('axios');
 const logger = require('../utils/logger');
 
-// Validate required environment variables
-const requiredEnvVars = [
-  'MPESA_CONSUMER_KEY',
-  'MPESA_CONSUMER_SECRET',
-  'MPESA_SHORTCODE',
-  'MPESA_PASSKEY',
-  'MPESA_CALLBACK_URL',
-];
+// Validate required environment variables only in live mode
+if (process.env.PAYMENTS_MODE === 'live') {
+  const requiredEnvVars = [
+    'MPESA_CONSUMER_KEY',
+    'MPESA_CONSUMER_SECRET',
+    'MPESA_SHORTCODE',
+    'MPESA_PASSKEY',
+    'MPESA_CALLBACK_URL',
+  ];
 
-requiredEnvVars.forEach((envVar) => {
-  if (!process.env[envVar]) {
-    logger.error(`Missing required environment variable: ${envVar}`);
-  }
-});
+  requiredEnvVars.forEach((envVar) => {
+    if (!process.env[envVar]) {
+      logger.error(`Missing required M-Pesa environment variable in live mode: ${envVar}`);
+    }
+  });
+}
 
 const MPESA_BASE_URL =
   process.env.MPESA_ENV === 'production'
@@ -104,6 +106,22 @@ const initiateSTKPush = async ({ phone, amount, accountReference, transactionDes
     throw new Error('Invalid amount');
   }
 
+  const isDemo = process.env.PAYMENTS_MODE === 'demo' || (!process.env.MPESA_CONSUMER_KEY && process.env.PAYMENTS_MODE !== 'live');
+
+  if (isDemo) {
+    const normalizedPhone = normalizePhone(phone);
+    const demoCheckoutId = `ws_CO_demo_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+    const demoMerchantId = `demo_merchant_${Date.now()}`;
+    logger.info(`[DEMO MODE] STK Push initiated for ${normalizedPhone}, amount: KES ${amount}`);
+    return {
+      success: true,
+      checkoutRequestId: demoCheckoutId,
+      merchantRequestId: demoMerchantId,
+      responseCode: '0',
+      customerMessage: 'Success. Request accepted for processing (Demo Mode).',
+    };
+  }
+
   try {
     const token = await getAccessToken();
     const { password, timestamp } = generatePassword();
@@ -152,6 +170,17 @@ const initiateSTKPush = async ({ phone, amount, accountReference, transactionDes
 const querySTKPush = async (checkoutRequestId) => {
   if (!checkoutRequestId) {
     throw new Error('checkoutRequestId is required');
+  }
+
+  const isDemo = process.env.PAYMENTS_MODE === 'demo' || (!process.env.MPESA_CONSUMER_KEY && process.env.PAYMENTS_MODE !== 'live');
+
+  if (isDemo) {
+    logger.info(`[DEMO MODE] Query STK Push status for ${checkoutRequestId}`);
+    return {
+      ResponseCode: '0',
+      ResultCode: '0',
+      ResultDesc: 'The service request is processed successfully. (Demo Mode)',
+    };
   }
 
   try {
