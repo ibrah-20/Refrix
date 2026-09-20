@@ -85,7 +85,23 @@ if (process.env.NODE_ENV !== 'test') {
 }
 
 // Health check
-app.get('/health', (req, res) => res.json({ status: 'ok', env: process.env.NODE_ENV }));
+app.get('/health', (req, res) => {
+  let dbHost = 'none';
+  let dbSource = 'none';
+  try {
+    const rawUrl = process.env.DATABASE_URL || process.env.SUPABASE_DATABASE_URL;
+    if (rawUrl) {
+      const parsed = new URL(rawUrl);
+      dbHost = parsed.hostname;
+      dbSource = process.env.DATABASE_URL ? 'DATABASE_URL' : 'SUPABASE_DATABASE_URL';
+    } else if (process.env.SUPABASE_DB_HOST || process.env.SUPABASE_URL) {
+      dbHost = process.env.SUPABASE_DB_HOST || (process.env.SUPABASE_URL ? `db.${process.env.SUPABASE_URL.replace('https://', '').split('.')[0]}.supabase.co` : 'localhost');
+      dbSource = 'FALLBACK (DATABASE_URL unset)';
+    }
+  } catch (_) {}
+
+  res.json({ status: 'ok', env: process.env.NODE_ENV, dbSource, dbHost });
+});
 
 // Routes
 app.use('/api/auth', authRoutes);

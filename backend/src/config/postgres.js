@@ -30,6 +30,20 @@ if (connectionString) {
   });
 }
 
+// Safe connection diagnostic logger (never exposes passwords or secret URIs)
+try {
+  const rawUrl = process.env.DATABASE_URL || process.env.SUPABASE_DATABASE_URL;
+  if (rawUrl) {
+    const parsed = new URL(rawUrl);
+    logger.info(`[DB CONFIG] Source: ${process.env.DATABASE_URL ? 'DATABASE_URL' : 'SUPABASE_DATABASE_URL'} | Host: ${parsed.hostname} | Port: ${parsed.port || 5432} | DB: ${parsed.pathname.replace('/', '')} | User: ${parsed.username ? parsed.username.split('.')[0] : 'none'}`);
+  } else {
+    const fallbackHost = process.env.SUPABASE_DB_HOST || (process.env.SUPABASE_URL ? `${process.env.SUPABASE_URL.replace('https://', '').split('.')[0]}.supabase.co` : 'localhost');
+    logger.info(`[DB CONFIG] Source: FALLBACK (DATABASE_URL unset) | Host: ${fallbackHost} | Port: ${process.env.SUPABASE_DB_PORT || 5432} | DB: ${process.env.SUPABASE_DB_NAME || 'postgres'}`);
+  }
+} catch (e) {
+  logger.warn(`[DB CONFIG] Diagnostic parse error: ${e.message}`);
+}
+
 // Global pool error handler
 pool.on('error', (err) => {
   logger.error(`Unexpected error on idle PostgreSQL client: ${err.message}`);
