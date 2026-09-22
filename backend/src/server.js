@@ -15,41 +15,12 @@ const notificationRoutes = require('./routes/notifications');
 const adminRoutes = require('./routes/admin');
 
 
+const { ensureAdminExists } = require('./utils/seedAdmin');
+
 const app = express();
 
 // Trust reverse proxy (Render / Cloudflare load balancers)
 app.set('trust proxy', 1);
-
-// Auto-seed admin user in development mode
-(async () => {
-  if (process.env.NODE_ENV === 'development') {
-    try {
-      const bcrypt = require('bcryptjs');
-      const { userRepository } = require('./repositories');
-      const { nanoid } = require('nanoid');
-      const adminEmail = process.env.ADMIN_EMAIL || 'admin@refrix.com';
-      const adminPassword = process.env.ADMIN_PASSWORD || 'AdminPass123!';
-
-      const existing = await userRepository.findByEmail(adminEmail);
-      if (!existing) {
-        const passwordHash = await bcrypt.hash(adminPassword, 12);
-        await userRepository.create({
-          fullName: 'Refrix Admin',
-          email: adminEmail,
-          phone: '254700000000',
-          passwordHash,
-          referralCode: nanoid(8).toUpperCase(),
-          role: 'admin',
-          isPaid: true,
-        });
-        logger.info(`Admin user auto-seeded: ${adminEmail}`);
-      }
-    } catch (err) {
-      logger.error(`Failed to auto-seed admin: ${err.message}`);
-    }
-  }
-})();
-
 
 // Security headers
 app.use(helmet());
@@ -126,6 +97,17 @@ app.use((req, res) => res.status(404).json({ success: false, message: 'Route not
 app.use(errorHandler);
 
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => logger.info(`Server running on port ${PORT} [${process.env.NODE_ENV}]`));
+
+const startServer = async () => {
+  try {
+    await ensureAdminExists();
+  } catch (err) {
+    logger.error(`[ADMIN INITIALIZATION] Unexpected failure during startup: ${err.message}`);
+  }
+
+  app.listen(PORT, () => logger.info(`Server running on port ${PORT} [${process.env.NODE_ENV}]`));
+};
+
+startServer();
 
 module.exports = app;
