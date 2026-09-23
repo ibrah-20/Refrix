@@ -145,6 +145,8 @@ CREATE TABLE IF NOT EXISTS withdrawals (
     processed_by_id UUID REFERENCES users(id) ON DELETE SET NULL,
     processed_at TIMESTAMPTZ DEFAULT NULL,
     mpesa_receipt_number VARCHAR(100) DEFAULT NULL,
+    source_referral_amount NUMERIC(12, 2) NOT NULL DEFAULT 0.00,
+    source_company_amount NUMERIC(12, 2) NOT NULL DEFAULT 0.00,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

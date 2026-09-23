@@ -28,18 +28,27 @@ const logAction = async (adminId, action, details, ip, targetUserId = null, targ
 // Dashboard stats
 exports.getDashboardStats = async (req, res) => {
   try {
+    const adminId = req.user?.id || req.user?._id;
+
     const [
       totalUsersRes,
       paidUsersRes,
-      revenueRes,
+      regTxsRes,
+      l1CommRes,
+      l2CommRes,
       pendingWdRes,
       totalWdRes,
       suspiciousRes,
       recentTxRes,
+      companyWdRes,
+      adminUserRes,
+      adminPendingRefRes,
     ] = await Promise.all([
       db.query("SELECT COUNT(*) FROM users WHERE role = 'user'"),
       db.query("SELECT COUNT(*) FROM users WHERE role = 'user' AND is_paid = true"),
-      db.query("SELECT COALESCE(SUM(amount), 0) AS total FROM transactions WHERE type = 'registration' AND status = 'completed'"),
+      db.query("SELECT COUNT(*) AS count, COALESCE(SUM(amount), 0) AS gross FROM transactions WHERE type = 'registration' AND status = 'completed'"),
+      db.query("SELECT COALESCE(SUM(commission_amount), 0) AS total FROM referrals WHERE status = 'qualified' AND level = 1"),
+      db.query("SELECT COALESCE(SUM(commission_amount), 0) AS total FROM referrals WHERE status = 'qualified' AND level = 2"),
       db.query("SELECT COUNT(*) FROM withdrawals WHERE status = 'pending'"),
       db.query("SELECT COALESCE(SUM(amount), 0) AS total FROM withdrawals WHERE status IN ('approved', 'processed')"),
       db.query("SELECT COUNT(*) FROM users WHERE is_suspicious = true"),
@@ -51,14 +60,37 @@ exports.getDashboardStats = async (req, res) => {
         ORDER BY t.created_at DESC
         LIMIT 10
       `),
+      db.query("SELECT COALESCE(SUM(source_company_amount), 0) AS total FROM withdrawals WHERE status IN ('pending', 'approved', 'processed')"),
+      adminId ? userRepository.findById(adminId) : Promise.resolve(null),
+      adminId ? db.query("SELECT COUNT(*) FROM referrals WHERE referrer_id = $1 AND status = 'pending'", [adminId]) : Promise.resolve({ rows: [{ count: 0 }] }),
     ]);
 
     const totalUsers = parseInt(totalUsersRes.rows[0].count, 10);
     const paidUsers = parseInt(paidUsersRes.rows[0].count, 10);
-    const totalRevenue = parseFloat(revenueRes.rows[0].total);
+    const successfulRegistrations = parseInt(regTxsRes.rows[0].count, 10);
+    const grossRevenue = parseFloat(regTxsRes.rows[0].gross);
+
+    const totalLevel1Commissions = parseFloat(l1CommRes.rows[0].total);
+    const totalLevel2Commissions = parseFloat(l2CommRes.rows[0].total);
+
+    const companyRevenueGenerated = successfulRegistrations * 100.00;
+    const companyRevenueWithdrawn = parseFloat(companyWdRes.rows[0].total);
+    const companyRevenueBalance = Math.max(0, companyRevenueGenerated - companyRevenueWithdrawn);
+
     const pendingWithdrawals = parseInt(pendingWdRes.rows[0].count, 10);
     const totalWithdrawals = parseFloat(totalWdRes.rows[0].total);
     const suspiciousAccounts = parseInt(suspiciousRes.rows[0].count, 10);
+
+    const adminUser = adminUserRes;
+    const adminReferralEarnings = adminUser ? parseFloat(adminUser.total_earned) : 0;
+    const adminReferralWalletBalance = adminUser ? parseFloat(adminUser.wallet_balance) : 0;
+    const adminReferralWithdrawals = adminUser ? parseFloat(adminUser.total_withdrawn) : 0;
+
+    const totalBusinessFunds = adminReferralWalletBalance + companyRevenueBalance;
+
+    const baseUrl = process.env.FRONTEND_URL || 'https://refrix.com';
+    const adminReferralCode = adminUser ? (adminUser.referral_code || '') : '';
+    const adminReferralLink = adminReferralCode ? `${baseUrl}/auth/register?ref=${adminReferralCode}` : '';
 
     const recentTransactions = recentTxRes.rows.map((t) => ({
       id: t.id,
@@ -80,11 +112,31 @@ exports.getDashboardStats = async (req, res) => {
         totalUsers,
         paidUsers,
         unpaidUsers: totalUsers - paidUsers,
-        totalRevenue,
+        successfulRegistrations,
+        grossRevenue,
+        totalLevel1Commissions,
+        totalLevel2Commissions,
+        companyRevenueGenerated,
+        companyRevenueWithdrawn,
+        companyRevenueBalance,
+        adminReferralEarnings,
+        adminReferralWithdrawals,
+        adminReferralWalletBalance,
+        totalBusinessFunds,
+        totalRevenue: grossRevenue, // backward compatibility
         pendingWithdrawals,
         totalWithdrawals,
         suspiciousAccounts,
         recentTransactions,
+        adminPersonal: {
+          referralCode: adminReferralCode,
+          referralLink: adminReferralLink,
+          walletBalance: adminReferralWalletBalance,
+          totalEarned: adminReferralEarnings,
+          totalWithdrawn: adminReferralWithdrawals,
+          qualifiedReferralsCount: adminUser ? parseInt(adminUser.qualified_referrals_count, 10) : 0,
+          pendingReferralsCount: parseInt(adminPendingRefRes.rows[0].count, 10),
+        },
       },
     });
   } catch (error) {
@@ -322,14 +374,22 @@ exports.rejectWithdrawal = async (req, res) => {
         throw new Error('WITHDRAWAL_ALREADY_PROCESSED');
       }
 
-      // Refund wallet: amountChange = +amount
-      const updatedUser = await userRepository.updateWalletBalance(
-        withdrawal.user_id,
-        parseFloat(withdrawal.amount),
-        0,
-        0,
-        client
-      );
+      // Refund wallet: only refund the portion that was deducted from wallet_balance (source_referral_amount)
+      const refundWalletAmount =
+        withdrawal.source_referral_amount !== undefined && withdrawal.source_referral_amount !== null
+          ? parseFloat(withdrawal.source_referral_amount)
+          : parseFloat(withdrawal.amount);
+
+      let updatedUser = null;
+      if (refundWalletAmount > 0) {
+        updatedUser = await userRepository.updateWalletBalance(
+          withdrawal.user_id,
+          refundWalletAmount,
+          0,
+          0,
+          client
+        );
+      }
 
       await withdrawalRepository.updateStatus(withdrawalId, 'rejected', adminId, reason || null, null, client);
 
@@ -338,7 +398,7 @@ exports.rejectWithdrawal = async (req, res) => {
         {
           userId: withdrawal.user_id,
           type: 'refund',
-          amount: parseFloat(withdrawal.amount),
+          amount: refundWalletAmount,
           description: `Withdrawal rejected: ${reason || 'Admin rejected'}`,
           reference: `refund_wd_${withdrawalId}`,
           status: 'completed',

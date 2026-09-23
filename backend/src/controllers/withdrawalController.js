@@ -13,17 +13,126 @@ exports.requestWithdrawal = async (req, res) => {
     const user = req.user;
     const userId = user.id || user._id;
     const { amount } = req.body;
+    const reqAmount = parseFloat(amount);
 
     const settings = await systemSettingsRepository.getSettings();
     const minWithdrawal = parseFloat(settings?.min_withdrawal || process.env.MIN_WITHDRAWAL || 100);
+
+    if (!reqAmount || reqAmount < minWithdrawal) {
+      return res.status(400).json({ success: false, message: `Minimum withdrawal is KES ${minWithdrawal}.` });
+    }
+
+    const isAdmin = user.role === 'admin';
+
+    if (isAdmin) {
+      // ADMIN WITHDRAWAL LOGIC: Can withdraw from Referral Wallet + Company Revenue Balance
+      const withdrawal = await db.withTransaction(async (client) => {
+        const lockedAdmin = await userRepository.findByIdForUpdate(userId, client);
+        if (!lockedAdmin) throw new Error('USER_NOT_FOUND');
+
+        const adminReferralBalance = parseFloat(lockedAdmin.wallet_balance);
+
+        const regRes = await client.query(
+          "SELECT COUNT(*) AS count FROM transactions WHERE type = 'registration' AND status = 'completed'"
+        );
+        const completedCount = parseInt(regRes.rows[0].count, 10);
+        const companyRevenueGenerated = completedCount * 100.00;
+
+        const companyWdRes = await client.query(
+          "SELECT COALESCE(SUM(source_company_amount), 0) AS total FROM withdrawals WHERE status IN ('pending', 'approved', 'processed')"
+        );
+        const companyRevenueWithdrawn = parseFloat(companyWdRes.rows[0].total);
+        const companyRevenueBalance = Math.max(0, companyRevenueGenerated - companyRevenueWithdrawn);
+
+        const totalBusinessFunds = adminReferralBalance + companyRevenueBalance;
+
+        if (reqAmount > totalBusinessFunds) {
+          throw new Error('INSUFFICIENT_BUSINESS_FUNDS');
+        }
+
+        // Check pending withdrawal under lock
+        const userWithdrawals = await withdrawalRepository.findByUser(userId, 50, client);
+        const pendingExist = userWithdrawals.some((w) => w.status === 'pending');
+        if (pendingExist) {
+          throw new Error('PENDING_WITHDRAWAL_EXISTS');
+        }
+
+        let drawFromReferral = 0;
+        let drawFromCompany = 0;
+
+        if (adminReferralBalance >= reqAmount) {
+          drawFromReferral = reqAmount;
+          drawFromCompany = 0;
+        } else {
+          drawFromReferral = adminReferralBalance;
+          drawFromCompany = reqAmount - adminReferralBalance;
+        }
+
+        let updatedAdmin = lockedAdmin;
+        if (drawFromReferral > 0) {
+          updatedAdmin = await userRepository.updateWalletBalance(userId, -drawFromReferral, 0, 0, client);
+        }
+
+        const newWithdrawal = await withdrawalRepository.create(
+          {
+            userId,
+            amount: reqAmount,
+            phoneNumber: user.phone,
+            status: 'pending',
+            sourceReferralAmount: drawFromReferral,
+            sourceCompanyAmount: drawFromCompany,
+          },
+          client
+        );
+
+        await walletTransactionRepository.create(
+          {
+            userId,
+            type: 'withdrawal',
+            amount: -reqAmount,
+            description: `Admin business withdrawal (Referral: KES ${drawFromReferral}, Company: KES ${drawFromCompany})`,
+            reference: `wd_${newWithdrawal.id}`,
+            status: 'pending',
+            balanceAfter: parseFloat(updatedAdmin ? updatedAdmin.wallet_balance : 0),
+            relatedWithdrawalId: newWithdrawal.id,
+          },
+          client
+        );
+
+        await notificationRepository.create(
+          {
+            userId,
+            type: 'withdrawal_requested',
+            title: 'Admin Business Withdrawal Requested',
+            message: `Admin withdrawal request of KES ${reqAmount} logged.`,
+            metadata: { withdrawalId: newWithdrawal.id, amount: reqAmount },
+          },
+          client
+        );
+
+        return newWithdrawal;
+      });
+
+      return res.status(201).json({
+        success: true,
+        message: 'Admin withdrawal request submitted successfully.',
+        withdrawal: {
+          id: withdrawal.id,
+          _id: withdrawal.id,
+          user: userId,
+          amount: parseFloat(withdrawal.amount),
+          phoneNumber: withdrawal.phone_number,
+          status: withdrawal.status,
+          createdAt: withdrawal.created_at,
+        },
+      });
+    }
+
+    // MEMBER WITHDRAWAL LOGIC: Strict checks required
     const minBalance = parseFloat(settings?.min_withdrawal_balance || process.env.MIN_WITHDRAWAL_BALANCE || 1500);
     const minReferrals = parseInt(settings?.min_qualified_referrals || process.env.MIN_QUALIFIED_REFERRALS || 3, 10);
     const maxDailyWithdrawal = parseFloat(settings?.max_daily_withdrawal || process.env.MAX_DAILY_WITHDRAWAL || 5000);
     const maxWithdrawalsPerDay = parseInt(settings?.max_withdrawals_per_day || process.env.MAX_WITHDRAWALS_PER_DAY || 3, 10);
-
-    if (!amount || amount < minWithdrawal) {
-      return res.status(400).json({ success: false, message: `Minimum withdrawal is KES ${minWithdrawal}.` });
-    }
 
     const walletBalance = user.walletBalance !== undefined ? user.walletBalance : parseFloat(user.wallet_balance);
     const qualifiedReferralsCount =
@@ -41,7 +150,7 @@ exports.requestWithdrawal = async (req, res) => {
       });
     }
 
-    if (amount > walletBalance) {
+    if (reqAmount > walletBalance) {
       return res.status(400).json({ success: false, message: 'Insufficient wallet balance.' });
     }
 
@@ -51,7 +160,7 @@ exports.requestWithdrawal = async (req, res) => {
       if (!lockedUser) throw new Error('USER_NOT_FOUND');
 
       const currentBalance = parseFloat(lockedUser.wallet_balance);
-      if (amount > currentBalance) {
+      if (reqAmount > currentBalance) {
         throw new Error('INSUFFICIENT_BALANCE');
       }
 
@@ -67,19 +176,21 @@ exports.requestWithdrawal = async (req, res) => {
       if (dailyStats.dailyCount + 1 > maxWithdrawalsPerDay) {
         throw new Error('MAX_DAILY_WITHDRAWALS_EXCEEDED');
       }
-      if (dailyStats.dailyTotal + amount > maxDailyWithdrawal) {
+      if (dailyStats.dailyTotal + reqAmount > maxDailyWithdrawal) {
         throw new Error('MAX_DAILY_AMOUNT_EXCEEDED');
       }
 
-      // Deduct from wallet: amountChange = -amount
-      const updatedUser = await userRepository.updateWalletBalance(userId, -amount, 0, 0, client);
+      // Deduct from wallet: amountChange = -reqAmount
+      const updatedUser = await userRepository.updateWalletBalance(userId, -reqAmount, 0, 0, client);
 
       const newWithdrawal = await withdrawalRepository.create(
         {
           userId,
-          amount,
+          amount: reqAmount,
           phoneNumber: user.phone,
           status: 'pending',
+          sourceReferralAmount: reqAmount,
+          sourceCompanyAmount: 0,
         },
         client
       );
@@ -89,7 +200,7 @@ exports.requestWithdrawal = async (req, res) => {
         {
           userId,
           type: 'withdrawal',
-          amount: -amount,
+          amount: -reqAmount,
           description: 'Withdrawal request created',
           reference: `wd_${newWithdrawal.id}`,
           status: 'pending',
@@ -105,8 +216,8 @@ exports.requestWithdrawal = async (req, res) => {
           userId,
           type: 'withdrawal_requested',
           title: 'Withdrawal Requested',
-          message: `Your withdrawal request of KES ${amount} has been received.`,
-          metadata: { withdrawalId: newWithdrawal.id, amount },
+          message: `Your withdrawal request of KES ${reqAmount} has been received.`,
+          metadata: { withdrawalId: newWithdrawal.id, amount: reqAmount },
         },
         client
       );
@@ -128,6 +239,9 @@ exports.requestWithdrawal = async (req, res) => {
       },
     });
   } catch (error) {
+    if (error.message === 'INSUFFICIENT_BUSINESS_FUNDS') {
+      return res.status(400).json({ success: false, message: 'Insufficient total business funds available.' });
+    }
     if (error.message === 'INSUFFICIENT_BALANCE') {
       return res.status(400).json({ success: false, message: 'Insufficient wallet balance.' });
     }

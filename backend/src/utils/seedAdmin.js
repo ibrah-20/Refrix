@@ -18,11 +18,27 @@ const ensureAdminExists = async () => {
     return { status: 'skipped', reason: 'missing_credentials' };
   }
 
+  // Ensure withdrawals table has source breakdown columns
+  try {
+    await db.query(`
+      ALTER TABLE withdrawals ADD COLUMN IF NOT EXISTS source_referral_amount NUMERIC(12, 2) NOT NULL DEFAULT 0.00;
+      ALTER TABLE withdrawals ADD COLUMN IF NOT EXISTS source_company_amount NUMERIC(12, 2) NOT NULL DEFAULT 0.00;
+    `);
+  } catch (err) {
+    logger.error('Failed auto-migration for withdrawal source columns:', err);
+  }
+
   const existing = await userRepository.findByEmail(adminEmail);
 
   if (existing) {
     if (existing.role === 'admin') {
-      logger.info(`[ADMIN INITIALIZATION] Admin account already exists: ${adminEmail}`);
+      if (!existing.referral_code || !existing.is_paid) {
+        let code = existing.referral_code || nanoid(8).toUpperCase();
+        await db.query('UPDATE users SET referral_code = $1, is_paid = true, updated_at = NOW() WHERE id = $2', [code, existing.id]);
+        logger.info(`[ADMIN INITIALIZATION] Repaired missing referral code / is_paid for admin: ${adminEmail}`);
+      } else {
+        logger.info(`[ADMIN INITIALIZATION] Admin account already exists: ${adminEmail}`);
+      }
       return { status: 'exists', role: 'admin' };
     }
 

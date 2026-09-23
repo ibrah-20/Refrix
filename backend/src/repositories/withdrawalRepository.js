@@ -5,14 +5,30 @@ const db = require('../db');
  */
 const withdrawalRepository = {
   async create(withdrawalData, dbClient = db) {
-    const { userId, amount, phoneNumber, status = 'pending', adminNote = null } = withdrawalData;
+    const {
+      userId,
+      amount,
+      phoneNumber,
+      status = 'pending',
+      adminNote = null,
+      sourceReferralAmount = 0.00,
+      sourceCompanyAmount = 0.00,
+    } = withdrawalData;
 
     const sql = `
-      INSERT INTO withdrawals (user_id, amount, phone_number, status, admin_note)
-      VALUES ($1, $2, $3, $4, $5)
+      INSERT INTO withdrawals (user_id, amount, phone_number, status, admin_note, source_referral_amount, source_company_amount)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
       RETURNING *
     `;
-    const res = await dbClient.query(sql, [userId, amount, phoneNumber, status, adminNote]);
+    const res = await dbClient.query(sql, [
+      userId,
+      amount,
+      phoneNumber,
+      status,
+      adminNote,
+      sourceReferralAmount,
+      sourceCompanyAmount,
+    ]);
     return res.rows[0];
   },
 
